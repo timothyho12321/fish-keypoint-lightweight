@@ -132,11 +132,9 @@ if __name__ == "__main__":
 
     # Load Model Config
     model_cfg = config.get('model', {})
-    # MODEL_ID = model_cfg.get('path_top_view')
     MODEL_ID = model_cfg.get('path_side_view')
+    
     # B. Start Camera (Using ID from config)
-    # Using top_source as default. Modify if you want to use side_source or both.
-    # camera_id = config.get('top_source') 
     side_camera_id = config.get('side_source')
     
     cam = AravisCaptureThread(side_camera_id)
