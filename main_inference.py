@@ -7,13 +7,15 @@ import threading
 import numpy as np
 import supervision as sv
 from ultralytics import YOLO
+import gi
+gi.require_version('Aravis', '0.8')
 from gi.repository import Aravis
 
 # --- 1. USER CONFIGURATION ---
 MAX_ALLOWED_TILT = 50.0 
 # Note: Ultralytics handles conf/iou inside the predict method
 CONFIDENCE_THRESHOLD = 0.45 
-IOU_THRESHOLD = 0.40
+IOU_THRESHOLD = 0.7
 
 # Keypoint Definitions (Tiger Barbs)
 KEYPOINT_NAMES = ["S", "D", "T", "C", "B"]
@@ -74,6 +76,9 @@ class AravisCaptureThread:
         self.cam.start_acquisition()
         print(f"[{self.name}] Started. Res: {self.width}x{self.height}")
 
+        self.start_time = time.time()
+        self.frame_count = 0
+
         while not self.stop_event.is_set():
             buffer = self.stream.timeout_pop_buffer(1000000) # 1 sec timeout
             if buffer:
@@ -93,6 +98,15 @@ class AravisCaptureThread:
                         except queue.Empty:
                             pass
                     self.image_queue.put(frame_bgr)
+
+                    # Monitor Camera FPS
+                    self.frame_count += 1
+                    elapsed = time.time() - self.start_time
+                    if elapsed >= 30.0:
+                        fps = self.frame_count / elapsed
+                        print(f"[{self.name}] Camera FPS: {fps:.2f}")
+                        self.frame_count = 0
+                        self.start_time = time.time()
                 
                 self.stream.push_buffer(buffer)
 
@@ -131,10 +145,13 @@ if __name__ == "__main__":
     # --- MODEL LOADING STRATEGY ---
     # 1. Update this path to where your .pt file actually is!
     # Roboflow API strings won't work here. You need the physical file.
-    MODEL_PATH = "best.pt"  
-    
+    # MODEL_PATH = "best.pt"
+    # MODEL_PATH = "models/yolov8_hik_side_fish_pose_11s_250102_2026-01-02-keypoint-trial-0001.pt"
+    MODEL_PATH = "models/yolov8_hik_side_fish_pose_11s_250102_2026-01-02-keypoint-trial-0001.engine"
+
     print(f"Loading model: {MODEL_PATH}")
-    model = YOLO(MODEL_PATH)
+    # model = YOLO(MODEL_PATH)
+    model = YOLO(MODEL_PATH, task='pose')
 
     # CHECK FOR TENSORRT EXPORT (Huge Speedup)
     # If you haven't exported yet, the code below runs .pt (PyTorch)
@@ -151,9 +168,13 @@ if __name__ == "__main__":
     edge_annotator = sv.EdgeAnnotator(color=sv.Color.YELLOW, thickness=1, edges=fish_edges)
     vertex_annotator = sv.VertexAnnotator(color=sv.Color.GREEN, radius=4)
     box_annotator = sv.BoxAnnotator(thickness=2)
+    label_annotator = sv.LabelAnnotator(text_scale=0.5, text_thickness=1)
 
     print("Starting native inference loop. Press 'q' to exit.")
     
+    inference_count = 0
+    inference_start_time = time.time()
+
     try:
         while True:
             if cam.image_queue.empty():
@@ -167,12 +188,21 @@ if __name__ == "__main__":
             # 2. half=True: Uses FP16 (Massive speedup on Jetson)
             # 3. device=0: Ensures GPU usage
             # 4. stream=True: generator memory efficiency
+            # results = model.predict(
+            #     source=image,
+            #     conf=CONFIDENCE_THRESHOLD,
+            #     iou=IOU_THRESHOLD,
+            #     half=True,
+            #     # device=0,
+            #     verbose=False,
+            #     max_det=30 # Limit max detections if you only expect 20 fish
+            # )
             results = model.predict(
-                source=image, 
-                conf=CONFIDENCE_THRESHOLD, 
+                source=image,
+                conf=CONFIDENCE_THRESHOLD,
                 iou=IOU_THRESHOLD,
-                half=True, 
-                device=0,
+                imgsz=640,    # <-- ADDED (Critical: Engine expects fixed 640x640 input)
+                # device=0,
                 verbose=False,
                 max_det=30 # Limit max detections if you only expect 20 fish
             )
@@ -223,13 +253,25 @@ if __name__ == "__main__":
                     labels.append(f"{status} {int(tilt)}deg")
             
             # Draw Boxes with Labels
-            image = box_annotator.annotate(scene=image, detections=detections, labels=labels)
+            # 1. Draw Boxes (No labels argument here anymore)
+            image = box_annotator.annotate(scene=image, detections=detections)
 
+            # 2. Draw Labels (Use the new annotator here)
+            image = label_annotator.annotate(scene=image, detections=detections, labels=labels)
             # --- STATS DISPLAY ---
             cv2.putText(image, f"Healthy: {healthy_count} | Sick: {sick_count}", (20, 40), 
                         cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
             
             cv2.imshow("Fish Monitor (Native)", image)
+
+            # Monitor Inference FPS
+            inference_count += 1
+            elapsed = time.time() - inference_start_time
+            if elapsed >= 30.0:
+                fps = inference_count / elapsed
+                print(f"[Main] Inference FPS: {fps:.2f}")
+                inference_count = 0
+                inference_start_time = time.time()
 
             if cv2.waitKey(1) & 0xFF == ord('q'):
                 break
