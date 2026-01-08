@@ -167,8 +167,19 @@ if __name__ == "__main__":
     fish_edges = [(0, 1), (1, 2), (2, 4), (4, 0)] 
     edge_annotator = sv.EdgeAnnotator(color=sv.Color.YELLOW, thickness=1, edges=fish_edges)
     vertex_annotator = sv.VertexAnnotator(color=sv.Color.GREEN, radius=4)
-    box_annotator = sv.BoxAnnotator(thickness=2)
-    label_annotator = sv.LabelAnnotator(text_scale=0.5, text_thickness=1)
+
+    # Annotators for Healthy (Green)
+    box_annotator_healthy = sv.BoxAnnotator(color=sv.Color.GREEN, thickness=2)
+    label_annotator_healthy = sv.LabelAnnotator(color=sv.Color.GREEN, text_scale=0.5, text_thickness=1)
+
+    # Annotators for Sick (Orange)
+    # Orange = (255, 165, 0)
+    box_annotator_sick = sv.BoxAnnotator(color=sv.Color(255, 165, 0), thickness=2)
+    label_annotator_sick = sv.LabelAnnotator(color=sv.Color(255, 165, 0), text_scale=0.5, text_thickness=1)
+
+    # Annotators for Unknown (Gray/Default)
+    box_annotator_unknown = sv.BoxAnnotator(color=sv.Color(128, 128, 128), thickness=2)
+    label_annotator_unknown = sv.LabelAnnotator(color=sv.Color(128, 128, 128), text_scale=0.5, text_thickness=1)
 
     print("Starting native inference loop. Press 'q' to exit.")
     
@@ -221,8 +232,15 @@ if __name__ == "__main__":
             healthy_count = 0
             sick_count = 0
             
-            # Prepare labels
-            labels = []
+            # Prepare separate lists for filtering
+            healthy_indices = []
+            healthy_labels = []
+            
+            sick_indices = []
+            sick_labels = []
+
+            unknown_indices = []
+            unknown_labels = []
 
             # Annotate Keypoints
             image = edge_annotator.annotate(scene=image, key_points=key_points)
@@ -237,27 +255,35 @@ if __name__ == "__main__":
                     tilt = get_fish_tilt(kpts)
                     
                     if tilt is None:
-                        labels.append("Unknown")
+                        unknown_indices.append(i)
+                        unknown_labels.append("Unknown")
                         continue
 
                     if tilt <= MAX_ALLOWED_TILT:
-                        status = "HEALTHY"
                         healthy_count += 1
-                        # Hacky color change for box: Supervision BoxAnnotator doesn't support 
-                        # per-box dynamic coloring easily without creating separate Detection objects.
-                        # For speed/simplicity, we label clearly.
+                        healthy_indices.append(i)
+                        healthy_labels.append(f"HEALTHY {int(tilt)}deg")
                     else:
-                        status = "SICK"
                         sick_count += 1
-
-                    labels.append(f"{status} {int(tilt)}deg")
+                        sick_indices.append(i)
+                        sick_labels.append(f"SICK {int(tilt)}deg")
             
-            # Draw Boxes with Labels
-            # 1. Draw Boxes (No labels argument here anymore)
-            image = box_annotator.annotate(scene=image, detections=detections)
+            # Draw Boxes & Labels (Categorized)
+            if healthy_indices:
+                det_h = detections[healthy_indices]
+                image = box_annotator_healthy.annotate(scene=image, detections=det_h)
+                image = label_annotator_healthy.annotate(scene=image, detections=det_h, labels=healthy_labels)
 
-            # 2. Draw Labels (Use the new annotator here)
-            image = label_annotator.annotate(scene=image, detections=detections, labels=labels)
+            if sick_indices:
+                det_s = detections[sick_indices]
+                image = box_annotator_sick.annotate(scene=image, detections=det_s)
+                image = label_annotator_sick.annotate(scene=image, detections=det_s, labels=sick_labels)
+
+            if unknown_indices:
+                det_u = detections[unknown_indices]
+                image = box_annotator_unknown.annotate(scene=image, detections=det_u)
+                image = label_annotator_unknown.annotate(scene=image, detections=det_u, labels=unknown_labels)
+
             # --- STATS DISPLAY ---
             cv2.putText(image, f"Healthy: {healthy_count} | Sick: {sick_count}", (20, 40), 
                         cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
