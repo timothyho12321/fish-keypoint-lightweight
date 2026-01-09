@@ -12,3 +12,10 @@ track_buffer: 300        # Keep lost tracks for 300 frames (10 seconds at 30fps)
 
 # Matching threshold - Lowered to improve re-ID after brief overlaps
 match_thresh: 0.65       # IoU threshold for matching (lower = more flexible re-ID)
+
+# Standard configuration keys required to prevent crashes
+fuse_score: true      # Dummy value required by code structure
+gmc_method: sparseOptFlow  # Often required by shared tracker code
+proximity_thresh: 0.5 # Dummy value
+appearance_thresh: 0.25 # Dummy value
+with_reid: false      # Explicitly disable ReID for ByteTrack
