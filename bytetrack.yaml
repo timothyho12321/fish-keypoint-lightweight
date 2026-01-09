@@ -11,7 +11,7 @@ new_track_thresh: 0.5    # Threshold for new track initialization
 track_buffer: 300        # Keep lost tracks for 300 frames (10 seconds at 30fps)
 
 # Matching threshold - Lowered to improve re-ID after brief overlaps
-match_thresh: 0.65       # IoU threshold for matching (lower = more flexible re-ID)
+match_thresh: 0.99     # IoU threshold for matching (lower = more flexible re-ID)
 
 # Standard configuration keys required to prevent crashes
 fuse_score: true      # Dummy value required by code structure
