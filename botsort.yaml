@@ -1,25 +1,24 @@
-# BoTSORT tracker configuration with ReID for robust fish tracking through occlusions
+# Ultralytics BoTSORT tracker configuration with ReID
 
-tracker_type: botsort  # Options: ['botsort', 'bytetrack']
+tracker_type: botsort
 
-# BoTSORT parameters
-track_high_thresh: 0.45  # High confidence threshold for first association
-track_low_thresh: 0.1    # Low confidence threshold for second association  
-new_track_thresh: 0.5    # Threshold for initializing new track
-track_buffer: 90         # Buffer to keep lost tracks (frames before removal)
-match_thresh: 0.8        # Matching threshold for ReID
+# Detection confidence thresholds
+track_high_thresh: 0.45  # High confidence detection threshold
+track_low_thresh: 0.1    # Low confidence detection threshold
+new_track_thresh: 0.5    # Threshold for new track initialization
 
-# ReID model for appearance-based re-identification
-# Helps maintain IDs during occlusions and overlaps
-with_reid: true          # Enable ReID module
-proximity_thresh: 0.5    # Spatial proximity threshold
-appearance_thresh: 0.25  # Appearance similarity threshold
+# Track management
+track_buffer: 90         # Frames to keep lost tracks before deletion
+match_thresh: 0.8        # Threshold for data association
 
-# General parameters  
-max_age: 90              # Maximum frames to keep lost tracks
-min_hits: 3              # Minimum hits before track is confirmed
-iou_threshold: 0.3       # IoU threshold for matching
+# ReID (Re-identification) for robust tracking through occlusions
+with_reid: true          # Enable ReID model for appearance matching
+proximity_thresh: 0.5    # Spatial proximity threshold for matching
+appearance_thresh: 0.25  # Appearance similarity threshold for ReID
 
-# ReID embedding parameters
-embedding_type: "osnet"  # Type of ReID model
-embedding_dim: 512       # Dimension of embedding vectors
+# Camera motion compensation
+cmc_method: sparseOptFlow  # Options: sparseOptFlow, orb, ecc
+
+# Fuse scores
+fuse_score: true        # Use fused detection and ReID scores
+
