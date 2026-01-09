@@ -13,17 +13,17 @@ from gi.repository import Aravis
 
 # --- 1. USER CONFIGURATION ---
 MAX_ALLOWED_TILT = 50.0 
+MIN_BODY_RATIO = 0.35   # <--- NEW: Threshold for "Flatness" (Height/Length)
 CONFIDENCE_THRESHOLD = 0.45 
 IOU_THRESHOLD = 0.7
 
 # Keypoint Definitions (Tiger Barbs)
-KEYPOINT_NAMES = ["S", "D", "T", "C", "B"]
+KEYPOINT_NAMES = ["S", "D", "T", "C", "B"]  # centre, bottom, top-dorsal, snout and tail
 IDX_DORSAL = 1  
 IDX_BOTTOM = 4   # <--- RENAMED from IDX_BELLY
 
-# ... (Camera Class omitted for brevity as it is unchanged) ...
+# --- 2. CAMERA CLASS ---
 class AravisCaptureThread:
-    # ... (Same as previous code) ...
     def __init__(self, ip_address, name="Cam"):
         self.ip = ip_address
         self.name = name
@@ -99,28 +99,53 @@ class AravisCaptureThread:
 
         self.cam.stop_acquisition()
 
-# --- 3. HELPER FUNCTION: TILT CALCULATION ---
-def get_fish_tilt(kpts_xy):
-    # kpts_xy is typically shape (N, 2) where N is num keypoints
-    if len(kpts_xy) <= IDX_BOTTOM: return None # <--- UPDATED CHECK
-
+# --- 3. HELPER FUNCTION: GET STATUS (UPDATED) ---
+def get_fish_status(kpts_xy):
+    """
+    Returns tuple: (Status_String, Color_Object)
+    """
+    # kpts_xy shape: (5, 2) -> [S, D, T, C, B]
+    snout  = kpts_xy[0]
     dorsal = kpts_xy[IDX_DORSAL]
-    bottom = kpts_xy[IDX_BOTTOM] # <--- RENAMED from belly
+    tail   = kpts_xy[2]
+    bottom = kpts_xy[IDX_BOTTOM]
 
-    # Check for (0,0) which indicates non-visible keypoint
-    if dorsal[0] == 0 or bottom[0] == 0: return None
+    # 1. MISSING POINT CHECK
+    # If we miss fins, it is likely flat/dead/occluded.
+    if dorsal[0] == 0 or bottom[0] == 0:
+        # Fallback: If we see Snout & Tail but miss fins, treat as SICK (Occluded)
+        if snout[0] != 0 and tail[0] != 0:
+            return "SICK (Occluded)", sv.Color(255, 165, 0) # Orange
+        return "Unknown", sv.Color(128, 128, 128) # Gray
 
-    # Calculate difference
+    # 2. CALCULATE DIMENSIONS
+    # Height: Distance between Dorsal and Bottom
+    height = math.hypot(dorsal[0] - bottom[0], dorsal[1] - bottom[1])
+    
+    # Length: Distance between Snout and Tail
+    length = math.hypot(snout[0] - tail[0], snout[1] - tail[1])
+
+    if length == 0: return "Unknown", sv.Color(128, 128, 128)
+
+    # 3. RATIO CHECK (The Fix for "Lying Flat")
+    ratio = height / length
+    
+    # Healthy Tiger Barbs are tall. Dead ones look flat/thin.
+    if ratio < MIN_BODY_RATIO:
+        return f"SICK (Flat {ratio:.2f})", sv.Color(255, 165, 0)
+
+    # 4. TILT CHECK (Standard Logic)
     dx = dorsal[0] - bottom[0]
     dy = dorsal[1] - bottom[1] 
-    
-    # Math remains the same: Calculate angle of the line connecting them
     angle_deg = math.degrees(math.atan2(dy, dx))
     
-    # Calculate deviation from vertical (-90 degrees)
     deviation = abs(angle_deg - (-90))
     if deviation > 180: deviation = 360 - deviation
-    return deviation
+
+    if deviation > MAX_ALLOWED_TILT:
+        return f"SICK (Tilt {int(deviation)})", sv.Color(255, 165, 0)
+    
+    return f"HEALTHY", sv.Color.GREEN
 
 # --- 4. MAIN EXECUTION ---
 if __name__ == "__main__":
@@ -167,6 +192,7 @@ if __name__ == "__main__":
                 
             image = cam.image_queue.get()
 
+            # Using imgsz=640 and conf/iou thresholds
             results = model.predict(
                 source=image,
                 conf=CONFIDENCE_THRESHOLD,
@@ -184,6 +210,7 @@ if __name__ == "__main__":
             healthy_count = 0
             sick_count = 0
             
+            # Reset lists for this frame
             healthy_indices = []
             healthy_labels = []
             
@@ -193,29 +220,32 @@ if __name__ == "__main__":
             unknown_indices = []
             unknown_labels = []
 
+            # 1. Annotate Keypoints on Raw Image
             image = edge_annotator.annotate(scene=image, key_points=key_points)
             image = vertex_annotator.annotate(scene=image, key_points=key_points)
 
+            # 2. Logic Loop
             if len(key_points.xy) > 0:
                 for i in range(len(detections)):
                     kpts = key_points.xy[i] 
                     
-                    tilt = get_fish_tilt(kpts)
+                    # --- NEW LOGIC CALL ---
+                    status_text, _ = get_fish_status(kpts)
                     
-                    if tilt is None:
-                        unknown_indices.append(i)
-                        unknown_labels.append("Unknown")
-                        continue
-
-                    if tilt <= MAX_ALLOWED_TILT:
+                    # Categorize based on string content
+                    if "HEALTHY" in status_text:
                         healthy_count += 1
                         healthy_indices.append(i)
-                        healthy_labels.append(f"HEALTHY {int(tilt)}deg")
-                    else:
+                        healthy_labels.append(status_text)
+                    elif "SICK" in status_text:
                         sick_count += 1
                         sick_indices.append(i)
-                        sick_labels.append(f"SICK {int(tilt)}deg")
+                        sick_labels.append(status_text)
+                    else:
+                        unknown_indices.append(i)
+                        unknown_labels.append(status_text)
             
+            # 3. Draw Boxes & Labels (Batch processing for speed)
             if healthy_indices:
                 det_h = detections[healthy_indices]
                 image = box_annotator_healthy.annotate(scene=image, detections=det_h)
@@ -231,11 +261,13 @@ if __name__ == "__main__":
                 image = box_annotator_unknown.annotate(scene=image, detections=det_u)
                 image = label_annotator_unknown.annotate(scene=image, detections=det_u, labels=unknown_labels)
 
+            # 4. Stats
             cv2.putText(image, f"Healthy: {healthy_count} | Sick: {sick_count}", (20, 40), 
                         cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
             
             cv2.imshow("Fish Monitor (Native)", image)
 
+            # 5. FPS Logic
             inference_count += 1
             elapsed = time.time() - inference_start_time
             if elapsed >= 30.0:
