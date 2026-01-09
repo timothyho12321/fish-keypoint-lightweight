@@ -208,13 +208,26 @@ if __name__ == "__main__":
                 
             image = cam.image_queue.get()
 
-            results = model.predict(
+            # Original predict method (commented out)
+            # results = model.predict(
+            #     source=image,
+            #     conf=CONFIDENCE_THRESHOLD,
+            #     iou=IOU_THRESHOLD,
+            #     imgsz=640,    
+            #     verbose=False,
+            #     max_det=30 
+            # )
+            
+            # Using tracking with BoTSORT
+            results = model.track(
                 source=image,
                 conf=CONFIDENCE_THRESHOLD,
                 iou=IOU_THRESHOLD,
-                imgsz=640,    
+                imgsz=640,
                 verbose=False,
-                max_det=30 
+                max_det=20,
+                tracker="botsort.yaml",
+                persist=True
             )
             
             result = results[0] 
