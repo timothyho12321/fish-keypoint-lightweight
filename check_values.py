@@ -150,11 +150,12 @@ if __name__ == "__main__":
     cam.start()
 
     # 3. Visualization Setup
-    box_annotator = sv.BoxAnnotator(thickness=1, color=sv.Color.WHITE)
-    label_annotator = sv.LabelAnnotator(text_scale=0.5, text_thickness=1, text_padding=2)
+    # Using Green for valid calibration data to distinguish from background
+    box_annotator = sv.BoxAnnotator(thickness=2, color=sv.Color.GREEN)
+    label_annotator = sv.LabelAnnotator(text_scale=0.5, text_thickness=1, text_padding=2, color=sv.Color.GREEN)
 
     # 4. Data Storage
-    collected_data = [] # List of dicts: {'tilt':, 'ratio':, 'y':, 'type': 'unknown'}
+    collected_data = [] 
 
     print("---------------------------------------------------------")
     print(f" STARTING CALIBRATION for {DURATION_MINUTES} Minutes")
@@ -178,13 +179,15 @@ if __name__ == "__main__":
             cv2.putText(image, f"Collecting Data... {remaining}s", (20, 40), 
                         cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
 
-            # Inference
-            results = model.predict(source=image, conf=0.45, iou=0.7, imgsz=640, verbose=False, max_det=30)
+            # Inference (ADDED half=True to match main_inference)
+            results = model.predict(source=image, conf=0.45, iou=0.7, imgsz=640, half=True, verbose=False, max_det=30)
             result = results[0]
 
             detections = sv.Detections.from_ultralytics(result)
             key_points = sv.KeyPoints.from_ultralytics(result)
             
+            # Lists for filtering ONLY valid fish
+            valid_indices = []
             labels = []
 
             if len(key_points.xy) > 0:
@@ -193,21 +196,22 @@ if __name__ == "__main__":
                     tilt, ratio, y_pos = calculate_metrics(kpts)
                     
                     if tilt is not None:
-                        # STORE DATA POINT
+                        # 1. Store Data
                         collected_data.append({
                             'tilt': tilt,
                             'ratio': ratio,
                             'y_pos': y_pos
                         })
                         
-                        # CREATE LABEL FOR DISPLAY
+                        # 2. Mark as Valid for Drawing
+                        valid_indices.append(i)
                         labels.append(f"T:{int(tilt)}° R:{ratio:.2f}")
-                    else:
-                        labels.append("Invalid")
 
-            # Annotate
-            image = box_annotator.annotate(scene=image, detections=detections)
-            image = label_annotator.annotate(scene=image, detections=detections, labels=labels)
+            # Annotate ONLY valid fish (Hides background false detections)
+            if valid_indices:
+                det_valid = detections[valid_indices]
+                image = box_annotator.annotate(scene=image, detections=det_valid)
+                image = label_annotator.annotate(scene=image, detections=det_valid, labels=labels)
 
             cv2.imshow("Calibration Mode", image)
             if cv2.waitKey(1) & 0xFF == ord('q'):
@@ -230,9 +234,6 @@ if __name__ == "__main__":
     print("\nProcessing Data...")
 
     # --- SEPARATION LOGIC ---
-    # We assume Healthy fish have HIGHER Ratio and LOWER Tilt.
-    # We sort by Ratio descending (Healthy on top, Sick/Flat on bottom)
-    
     total_fish = NUM_HEALTHY_FISH + NUM_SICK_FISH
     healthy_fraction = NUM_HEALTHY_FISH / total_fish
     
@@ -248,34 +249,22 @@ if __name__ == "__main__":
     # --- 1. CALCULATE TILT LIMIT ---
     # We take the 98th percentile of the healthy group to exclude outliers
     max_healthy_tilt = healthy_group['tilt'].quantile(0.98)
-    
-    # Add a small buffer (e.g., 5 degrees) but cap it reasonable
     rec_max_tilt = min(max_healthy_tilt + 5.0, 60.0) 
 
     # --- 2. CALCULATE RATIO_OPEN_WATER ---
-    # We want the lowest acceptable healthy ratio.
-    # We take the 2nd percentile (bottom 2%) of the healthy group.
+    # Bottom 2% of healthy group (conservative)
     min_healthy_ratio = healthy_group['ratio'].quantile(0.02)
-    
-    # Provide a small safety margin downwards
     rec_open_water = max(min_healthy_ratio - 0.02, 0.1)
 
     # --- 3. CALCULATE RATIO_BOTTOM_ZONE ---
-    # This needs to be stricter. We look at the 'Sick' group.
-    # If the sick fish had an average ratio of X, we want the threshold ABOVE X.
-    # But if healthy fish sometimes dip low, we need to be careful.
-    # Strategy: Set it to the Median of the Healthy Group minus 1 StdDev
-    # This forces fish at the bottom to be "Above Average" in posture.
-    
+    # Median of Healthy minus 1 StdDev
     healthy_mean = healthy_group['ratio'].mean()
     healthy_std  = healthy_group['ratio'].std()
     
-    # If standard deviation is tiny, default to a fixed offset
     if healthy_std < 0.02: healthy_std = 0.02
         
     rec_bottom_zone = healthy_mean - (1.0 * healthy_std)
     
-    # Ensure Bottom Zone is stricter (Higher) than Open Water
     if rec_bottom_zone < rec_open_water:
         rec_bottom_zone = rec_open_water + 0.05
 
@@ -291,7 +280,7 @@ if __name__ == "__main__":
     if not sick_group.empty:
         print(f"Sick    -> Avg Tilt: {sick_group['tilt'].mean():.1f}°, Avg Ratio: {sick_group['ratio'].mean():.2f}")
     print("-" * 30)
-    print("RECOMMENDED SETTINGS:")
+    print("RECOMMENDED SETTINGS (Paste these into main_inference.py):")
     print(f"MAX_ALLOWED_TILT  = {rec_max_tilt:.1f}")
     print(f"RATIO_OPEN_WATER  = {rec_open_water:.2f}")
     print(f"RATIO_BOTTOM_ZONE = {rec_bottom_zone:.2f}")
