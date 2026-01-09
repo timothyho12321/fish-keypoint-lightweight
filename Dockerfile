@@ -45,6 +45,7 @@ RUN pip3 install --upgrade pip && \
     "pyyaml" \
     "supervision" \
     "tensorrt" \
+    "pandas" \
     --extra-index-url https://pypi.nvidia.com
 
 # ---------------------------------------------------------------------------
