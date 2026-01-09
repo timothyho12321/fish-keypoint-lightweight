@@ -224,8 +224,9 @@ if __name__ == "__main__":
     box_annotator_unknown = sv.BoxAnnotator(color=sv.Color(128, 128, 128), thickness=2)
     label_annotator_unknown = sv.LabelAnnotator(color=sv.Color(128, 128, 128), text_scale=0.5, text_thickness=1)
 
-    # 4. Data Storage
-    collected_data = [] 
+    # 4. Data Storage (separate for healthy and sick)
+    healthy_data = []
+    sick_data = [] 
 
     print("---------------------------------------------------------")
     print(f" STARTING CALIBRATION for {DURATION_MINUTES} Minutes")
@@ -277,10 +278,10 @@ if __name__ == "__main__":
                         healthy_indices.append(i)
                         healthy_labels.append(status_text)
                         
-                        # Also collect data for calibration
+                        # Collect data for healthy fish
                         tilt, ratio, y_pos = calculate_metrics(kpts)
                         if tilt is not None:
-                            collected_data.append({
+                            healthy_data.append({
                                 'tilt': tilt,
                                 'ratio': ratio,
                                 'y_pos': y_pos
@@ -290,10 +291,10 @@ if __name__ == "__main__":
                         sick_indices.append(i)
                         sick_labels.append(status_text)
                         
-                        # Also collect data for calibration
+                        # Collect data for sick fish
                         tilt, ratio, y_pos = calculate_metrics(kpts)
                         if tilt is not None:
-                            collected_data.append({
+                            sick_data.append({
                                 'tilt': tilt,
                                 'ratio': ratio,
                                 'y_pos': y_pos
@@ -336,73 +337,108 @@ if __name__ == "__main__":
     # ==========================================
     #      STATISTICAL CALCULATION
     # ==========================================
-    if len(collected_data) < 10:
-        print("Not enough data collected!")
+    if len(healthy_data) < 5 and len(sick_data) < 5:
+        print("Not enough data collected for both healthy and sick fish!")
         exit()
 
-    df = pd.DataFrame(collected_data)
     print("\nProcessing Data...")
+    print("="*60)
+    print("       CALIBRATION RESULTS (Based on Current Thresholds)")
+    print("="*60)
+    print(f"Current Settings Used for Classification:")
+    print(f"  MAX_ALLOWED_TILT  = {MAX_ALLOWED_TILT}")
+    print(f"  RATIO_OPEN_WATER  = {RATIO_OPEN_WATER}")
+    print(f"  RATIO_BOTTOM_ZONE = {RATIO_BOTTOM_ZONE}")
+    print(f"  BOTTOM_ZONE_LIMIT = {BOTTOM_ZONE_LIMIT}")
+    print("-" * 60)
 
-    # --- SEPARATION LOGIC ---
-    total_fish = NUM_HEALTHY_FISH + NUM_SICK_FISH
-    healthy_fraction = NUM_HEALTHY_FISH / total_fish
-    
-    # Calculate the index to split the data
-    split_index = int(len(df) * healthy_fraction)
-    
-    # Sort data by Ratio (High Ratio = Healthy, Low Ratio = Sick)
-    df_sorted = df.sort_values(by='ratio', ascending=False)
-    
-    healthy_group = df_sorted.iloc[:split_index]
-    sick_group = df_sorted.iloc[split_index:]
+    # Convert to DataFrames
+    df_healthy = pd.DataFrame(healthy_data) if len(healthy_data) > 0 else pd.DataFrame()
+    df_sick = pd.DataFrame(sick_data) if len(sick_data) > 0 else pd.DataFrame()
 
-    # --- 1. CALCULATE TILT LIMIT ---
-    # We take the 98th percentile of the healthy group to exclude outliers
-    max_healthy_tilt = healthy_group['tilt'].quantile(0.98)
-    rec_max_tilt = min(max_healthy_tilt + 5.0, 60.0) 
+    print(f"Healthy Samples Collected: {len(df_healthy)}")
+    print(f"Sick Samples Collected:    {len(df_sick)}")
+    print("-" * 60)
 
-    # --- 2. CALCULATE RATIO_OPEN_WATER ---
-    # Bottom 2% of healthy group (conservative)
-    min_healthy_ratio = healthy_group['ratio'].quantile(0.02)
-    rec_open_water = max(min_healthy_ratio - 0.02, 0.1)
-
-    # --- 3. CALCULATE RATIO_BOTTOM_ZONE ---
-    # Median of Healthy minus 1 StdDev
-    healthy_mean = healthy_group['ratio'].mean()
-    healthy_std  = healthy_group['ratio'].std()
-    
-    if healthy_std < 0.02: healthy_std = 0.02
+    # --- HEALTHY FISH STATISTICS ---
+    if not df_healthy.empty:
+        print("\nHEALTHY FISH BEHAVIOR:")
+        avg_tilt_healthy = df_healthy['tilt'].mean()
+        std_tilt_healthy = df_healthy['tilt'].std()
+        avg_ratio_healthy = df_healthy['ratio'].mean()
+        std_ratio_healthy = df_healthy['ratio'].std()
         
-    rec_bottom_zone = healthy_mean - (1.0 * healthy_std)
-    
-    if rec_bottom_zone < rec_open_water:
-        rec_bottom_zone = rec_open_water + 0.05
+        print(f"  Avg Tilt:  {avg_tilt_healthy:.1f}° (±{std_tilt_healthy:.1f}°)")
+        print(f"  Max Tilt:  {df_healthy['tilt'].max():.1f}°")
+        print(f"  Avg Ratio: {avg_ratio_healthy:.3f} (±{std_ratio_healthy:.3f})")
+        print(f"  Min Ratio: {df_healthy['ratio'].min():.3f}")
+    else:
+        print("\nHEALTHY FISH BEHAVIOR: No data collected")
+        avg_tilt_healthy = None
+        avg_ratio_healthy = None
 
-    # --- OUTPUT RESULTS ---
-    print("\n" + "="*50)
-    print("       CALIBRATION RESULTS       ")
-    print("="*50)
-    print(f"Total Frames Analyzed: {len(df)}")
-    print(f"Healthy Samples: {len(healthy_group)} | Sick Samples: {len(sick_group)}")
-    print("-" * 30)
-    print("OBSERVED STATS (Means):")
-    print(f"Healthy -> Avg Tilt: {healthy_group['tilt'].mean():.1f}°, Avg Ratio: {healthy_group['ratio'].mean():.2f}")
-    if not sick_group.empty:
-        print(f"Sick    -> Avg Tilt: {sick_group['tilt'].mean():.1f}°, Avg Ratio: {sick_group['ratio'].mean():.2f}")
-    print("-" * 30)
-    print("RECOMMENDED SETTINGS (Paste these into main_inference.py):")
-    print(f"MAX_ALLOWED_TILT  = {rec_max_tilt:.1f}")
-    print(f"RATIO_OPEN_WATER  = {rec_open_water:.2f}")
-    print(f"RATIO_BOTTOM_ZONE = {rec_bottom_zone:.2f}")
-    print("="*50)
+    # --- SICK FISH STATISTICS ---
+    if not df_sick.empty:
+        print("\nSICK FISH BEHAVIOR:")
+        avg_tilt_sick = df_sick['tilt'].mean()
+        std_tilt_sick = df_sick['tilt'].std()
+        avg_ratio_sick = df_sick['ratio'].mean()
+        std_ratio_sick = df_sick['ratio'].std()
+        
+        print(f"  Avg Tilt:  {avg_tilt_sick:.1f}° (±{std_tilt_sick:.1f}°)")
+        print(f"  Max Tilt:  {df_sick['tilt'].max():.1f}°")
+        print(f"  Avg Ratio: {avg_ratio_sick:.3f} (±{std_ratio_sick:.3f})")
+        print(f"  Max Ratio: {df_sick['ratio'].max():.3f}")
+    else:
+        print("\nSICK FISH BEHAVIOR: No data collected")
+        avg_tilt_sick = None
+        avg_ratio_sick = None
+
+    # --- CALCULATE RECOMMENDED THRESHOLDS ---
+    print("\n" + "="*60)
+    print("       RECOMMENDED FINE-TUNED THRESHOLDS")
+    print("="*60)
+
+    # 1. MAX_ALLOWED_TILT: Set slightly above healthy average
+    if avg_tilt_healthy is not None:
+        rec_max_tilt = min(avg_tilt_healthy + 10.0, 70.0)  # Add 10° buffer
+    else:
+        rec_max_tilt = MAX_ALLOWED_TILT
+    
+    # 2. RATIO_OPEN_WATER: Set slightly below healthy minimum
+    if avg_ratio_healthy is not None:
+        min_healthy_ratio = df_healthy['ratio'].quantile(0.05)  # Bottom 5% of healthy
+        rec_open_water = max(min_healthy_ratio - 0.03, 0.20)
+    else:
+        rec_open_water = RATIO_OPEN_WATER
+
+    # 3. RATIO_BOTTOM_ZONE: Set more strictly (1 std dev below healthy mean)
+    if avg_ratio_healthy is not None:
+        rec_bottom_zone = max(avg_ratio_healthy - std_ratio_healthy, rec_open_water + 0.05)
+    else:
+        rec_bottom_zone = RATIO_BOTTOM_ZONE
+
+    print(f"MAX_ALLOWED_TILT  = {rec_max_tilt:.1f}  (Healthy avg: {avg_tilt_healthy:.1f}°)" if avg_tilt_healthy else f"MAX_ALLOWED_TILT  = {rec_max_tilt:.1f}  (No change)")
+    print(f"RATIO_OPEN_WATER  = {rec_open_water:.2f}  (Healthy min: {df_healthy['ratio'].min():.3f})" if not df_healthy.empty else f"RATIO_OPEN_WATER  = {rec_open_water:.2f}  (No change)")
+    print(f"RATIO_BOTTOM_ZONE = {rec_bottom_zone:.2f}  (Healthy avg: {avg_ratio_healthy:.3f})" if avg_ratio_healthy else f"RATIO_BOTTOM_ZONE = {rec_bottom_zone:.2f}  (No change)")
+    print("="*60)
 
     # Save to CSV
     output_df = pd.DataFrame([{
-        "PARAMETER": "MAX_ALLOWED_TILT", "VALUE": round(rec_max_tilt, 1)
+        "PARAMETER": "MAX_ALLOWED_TILT", 
+        "VALUE": round(rec_max_tilt, 1),
+        "HEALTHY_AVG": round(avg_tilt_healthy, 1) if avg_tilt_healthy else "N/A",
+        "SICK_AVG": round(avg_tilt_sick, 1) if avg_tilt_sick else "N/A"
     }, {
-        "PARAMETER": "RATIO_OPEN_WATER", "VALUE": round(rec_open_water, 2)
+        "PARAMETER": "RATIO_OPEN_WATER", 
+        "VALUE": round(rec_open_water, 3),
+        "HEALTHY_AVG": round(avg_ratio_healthy, 3) if avg_ratio_healthy else "N/A",
+        "SICK_AVG": round(avg_ratio_sick, 3) if avg_ratio_sick else "N/A"
     }, {
-        "PARAMETER": "RATIO_BOTTOM_ZONE", "VALUE": round(rec_bottom_zone, 2)
+        "PARAMETER": "RATIO_BOTTOM_ZONE", 
+        "VALUE": round(rec_bottom_zone, 3),
+        "HEALTHY_AVG": round(avg_ratio_healthy, 3) if avg_ratio_healthy else "N/A",
+        "SICK_AVG": round(avg_ratio_sick, 3) if avg_ratio_sick else "N/A"
     }])
     
     output_df.to_csv(SAVE_CSV_NAME, index=False)
