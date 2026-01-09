@@ -17,8 +17,8 @@ CONFIDENCE_THRESHOLD = 0.45
 IOU_THRESHOLD = 0.7
 
 # RATIO THRESHOLDS
-RATIO_OPEN_WATER = 0.35  # Lenient for swimming fish
-RATIO_BOTTOM_ZONE = 0.4 # Strict for fish on floor
+RATIO_OPEN_WATER = 0.31 #0.35  # Lenient for swimming fish
+RATIO_BOTTOM_ZONE = 0.39 #0.4 # Strict for fish on floor
 BOTTOM_ZONE_LIMIT = 0.6 # Bottom 15% of screen is "Danger Zone"
 
 # VISUAL DEBUGGING
@@ -140,11 +140,11 @@ def get_fish_status(kpts_xy, frame_height):
     if y_pos > (frame_height * BOTTOM_ZONE_LIMIT):
         # STRICT MODE: Fish on bottom must be very upright
         limit = RATIO_BOTTOM_ZONE # 0.50
-        zone_label = "BTM"
+        zone_label = "BTM FLAT"
     else:
         # LENIENT MODE: Fish swimming freely
         limit = RATIO_OPEN_WATER # 0.35
-        zone_label = "OPEN"
+        zone_label = "OPEN FLAT"
 
     if ratio < limit:
         # Returns SICK with Ratio and Zone info
