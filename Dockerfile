@@ -36,6 +36,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 #    - Uninstall numpy first to clear artifacts
 #    - Install pinned numpy AND all other packages in one go
 #    - CHANGED: "opencv-python-headless" -> "opencv-python" for imshow support
+#    - Added boxmot for advanced tracking with ReID
 # ---------------------------------------------------------------------------
 RUN pip3 install --upgrade pip && \
     pip3 uninstall -y numpy || true && \
@@ -46,6 +47,7 @@ RUN pip3 install --upgrade pip && \
     "supervision" \
     "tensorrt" \
     "pandas" \
+    "boxmot" \
     --extra-index-url https://pypi.nvidia.com
 
 # ---------------------------------------------------------------------------

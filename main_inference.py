@@ -6,7 +6,9 @@ import queue
 import threading
 import numpy as np
 import supervision as sv
+from pathlib import Path
 from ultralytics import YOLO
+from boxmot import BoTSORT
 import gi
 gi.require_version('Aravis', '0.8')
 from gi.repository import Aravis
@@ -26,6 +28,7 @@ SHOW_BOTTOM_ZONE_LINE = True  # Set to False to hide the line
 
 # TRACKING CONFIGURATION
 MAX_FISH_COUNT = 20  # Maximum number of fish to track
+REID_WEIGHTS = Path("models/osnet_x1_0_market_256x128_amsgrad_ep150_stp60_lr0.0015_b64_fb10_softmax_labelsmooth_flip.pth")
 
 # Keypoint Definitions (Tiger Barbs)
 KEYPOINT_NAMES = ["S", "D", "T", "C", "B"] 
@@ -180,6 +183,21 @@ if __name__ == "__main__":
     print(f"Loading model: {MODEL_PATH}")
     model = YOLO(MODEL_PATH, task='pose')
 
+    # Initialize BoxMOT BoTSORT tracker with custom ReID
+    print(f"Loading BoxMOT tracker with ReID: {REID_WEIGHTS}")
+    tracker = BoTSORT(
+        model_weights=REID_WEIGHTS,
+        device='cuda:0',
+        fp16=True,
+        track_high_thresh=0.45,
+        track_low_thresh=0.1,
+        new_track_thresh=0.5,
+        track_buffer=90,
+        match_thresh=0.8,
+        proximity_thresh=0.5,
+        appearance_thresh=0.25
+    )
+
     side_camera_id = config.get('side_source', 'No ID Found')
     cam = AravisCaptureThread(side_camera_id)
     cam.start()
@@ -218,32 +236,41 @@ if __name__ == "__main__":
                 
             image = cam.image_queue.get()
 
-            # Original predict method (commented out)
-            # results = model.predict(
-            #     source=image,
-            #     conf=CONFIDENCE_THRESHOLD,
-            #     iou=IOU_THRESHOLD,
-            #     imgsz=640,    
-            #     verbose=False,
-            #     max_det=30 
-            # )
-            
-            # Using tracking with BoTSORT + ReID to handle occlusions
-            results = model.track(
+            # 1. Run YOLO Detection (pose estimation)
+            results = model.predict(
                 source=image,
                 conf=CONFIDENCE_THRESHOLD,
                 iou=IOU_THRESHOLD,
                 imgsz=640,
                 verbose=False,
-                max_det=20,
-                tracker="botsort.yaml",  # BoTSORT with ReID for robust tracking through occlusions
-                persist=True
+                max_det=20
             )
             
-            result = results[0] 
-
+            result = results[0]
+            
+            # 2. Extract detections for BoxMOT (format: [x1, y1, x2, y2, conf, class_id])
+            det_boxes = result.boxes.data.cpu().numpy() if result.boxes is not None else np.empty((0, 6))
+            
+            # 3. Update BoxMOT tracker with detections
+            if len(det_boxes) > 0:
+                # BoxMOT output: [x1, y1, x2, y2, track_id, conf, class_id, det_ind]
+                tracks = tracker.update(det_boxes, image)
+            else:
+                tracks = np.empty((0, 8))
+            
+            # 4. Convert back to supervision format with tracker IDs
             detections = sv.Detections.from_ultralytics(result)
             key_points = sv.KeyPoints.from_ultralytics(result)
+            
+            # 5. Add BoxMOT track IDs to detections
+            if len(tracks) > 0 and len(detections) > 0:
+                # Map detections to tracks using detection index
+                track_ids = np.zeros(len(detections), dtype=int)
+                for track in tracks:
+                    det_idx = int(track[7])  # Detection index from BoxMOT
+                    if det_idx < len(detections):
+                        track_ids[det_idx] = int(track[4])  # Track ID
+                detections.tracker_id = track_ids
             
             frame_counter += 1
             
