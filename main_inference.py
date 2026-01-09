@@ -7,9 +7,316 @@ import threading
 import numpy as np
 import supervision as sv
 from ultralytics import YOLO
+from dataclasses import dataclass
+from typing import List, Dict, Tuple, Optional
+from collections import deque, defaultdict
 import gi
 gi.require_version('Aravis', '0.8')
 from gi.repository import Aravis
+
+# --- ObjectStatusAnalyzer Integration ---
+@dataclass
+class ObjectSnapshot:
+    """Temporary snapshot of an object at a specific time"""
+    timestamp: float
+    center: Tuple[float, float]
+    bbox: Tuple[float, float, float, float]
+    area: float
+    width: float
+    height: float
+    orientation: float
+    confidence: float
+    is_vertical: bool = False
+
+class ObjectStatusAnalyzer:
+    def __init__(self, min_confidence=0.3):
+        """
+        Object analyzer with 15-second update cycle
+        
+        Args:
+            min_confidence: Minimum detection confidence threshold
+        """
+        self.min_confidence = min_confidence
+        self.UPDATE_INTERVAL = 15.0
+        self.ANALYSIS_WINDOW = 30.0
+        self.CLUSTER_DISTANCE = 40.0
+        self.current_camera_type = 'side'
+        self.camera_data = {'side': self._init_camera_data()}
+        self.start_time = time.time()
+    
+    def _init_camera_data(self):
+        """Initialize data structure for a single camera"""
+        return {
+            'frame_buffer': deque(maxlen=300),
+            'all_detections_history': deque(maxlen=1000),
+            'cluster_counts_history': deque(maxlen=200),
+            'current_frame_data': None,
+            'stable_values': {
+                'total': 0,
+                'active': 0,
+                'sick': 0,
+                'dead': 0,
+                'last_update': 0,
+                'next_update': 0
+            },
+            'window_statistics': {
+                'min_count': float('inf'),
+                'max_count': 0,
+                'mode_count': 0,
+                'median_count': 0,
+                'mean_count': 0,
+                'count_std': 0
+            },
+            'frame_count': 0,
+            'last_15s_window_end': time.time(),
+            'windows_processed': 0,
+            'current_window_data': {
+                'start_time': time.time(),
+                'frame_count': 0,
+                'detection_counts': [],
+                'cluster_counts': [],
+                'snapshots': [],
+                'status_data': []
+            }
+        }
+    
+    def validate_detection(self, detection: Dict) -> bool:
+        """Validate detection"""
+        confidence = detection.get('confidence', 0)
+        if confidence < self.min_confidence:
+            return False
+        bbox = detection.get('bbox', [])
+        if len(bbox) != 4:
+            return False
+        x1, y1, x2, y2 = bbox
+        if x2 <= x1 or y2 <= y1:
+            return False
+        return True
+    
+    def create_snapshot(self, detection: Dict) -> ObjectSnapshot:
+        """Create snapshot from detection"""
+        bbox = detection['bbox']
+        x1, y1, x2, y2 = bbox
+        width = x2 - x1
+        height = y2 - y1
+        area = width * height
+        center_x = (x1 + x2) / 2
+        center_y = (y1 + y2) / 2
+        orientation = 0 if width >= height else 90
+        is_vertical = orientation > 45
+        return ObjectSnapshot(
+            timestamp=time.time(),
+            center=(center_x, center_y),
+            bbox=bbox,
+            area=area,
+            width=width,
+            height=height,
+            orientation=orientation,
+            confidence=detection.get('confidence', 0.3),
+            is_vertical=is_vertical
+        )
+    
+    def cluster_detections(self, snapshots: List[ObjectSnapshot]) -> Dict:
+        """Cluster detections for current frame"""
+        if not snapshots:
+            return {}
+        clusters = {}
+        used_indices = set()
+        for i, snapshot in enumerate(snapshots):
+            if i in used_indices:
+                continue
+            cluster_id = len(clusters)
+            clusters[cluster_id] = {
+                'snapshots': [snapshot],
+                'center': snapshot.center,
+                'avg_confidence': snapshot.confidence
+            }
+            used_indices.add(i)
+            for j, other_snapshot in enumerate(snapshots):
+                if j <= i or j in used_indices:
+                    continue
+                dist = math.sqrt(
+                    (snapshot.center[0] - other_snapshot.center[0])**2 +
+                    (snapshot.center[1] - other_snapshot.center[1])**2
+                )
+                if dist < self.CLUSTER_DISTANCE:
+                    clusters[cluster_id]['snapshots'].append(other_snapshot)
+                    used_indices.add(j)
+        return clusters
+    
+    def analyze_frame_status(self, clusters: Dict) -> Dict:
+        """Quick status analysis for current frame"""
+        active = len(clusters)
+        sick = 0
+        dead = 0
+        return {
+            'active': active,
+            'sick': sick,
+            'dead': dead,
+            'total': active + sick + dead
+        }
+    
+    def process_frame(self, current_detections: List[Dict], camera_type: str = 'side') -> Dict:
+        """Process a frame - called EVERY frame"""
+        current_time = time.time()
+        self.current_camera_type = camera_type
+        cam_data = self.camera_data[camera_type]
+        cam_data['frame_count'] += 1
+        
+        snapshots = []
+        for det in current_detections:
+            if self.validate_detection(det):
+                snapshots.append(self.create_snapshot(det))
+        
+        clusters = self.cluster_detections(snapshots)
+        cluster_count = len(clusters)
+        status = self.analyze_frame_status(clusters)
+        
+        frame_data = {
+            'frame': cam_data['frame_count'],
+            'timestamp': current_time,
+            'detections': len(snapshots),
+            'clusters': cluster_count,
+            'snapshots': snapshots,
+            'status': status,
+            'cluster_data': clusters
+        }
+        
+        cam_data['frame_buffer'].append(frame_data)
+        cam_data['all_detections_history'].extend(snapshots)
+        cam_data['cluster_counts_history'].append(cluster_count)
+        cam_data['current_window_data']['frame_count'] += 1
+        cam_data['current_window_data']['detection_counts'].append(len(snapshots))
+        cam_data['current_window_data']['cluster_counts'].append(cluster_count)
+        cam_data['current_window_data']['snapshots'].extend(snapshots)
+        cam_data['current_window_data']['status_data'].append(status)
+        
+        time_in_window = current_time - cam_data['current_window_data']['start_time']
+        if time_in_window >= self.UPDATE_INTERVAL:
+            self.update_stable_values(camera_type)
+            cam_data['current_window_data'] = {
+                'start_time': current_time,
+                'frame_count': 0,
+                'detection_counts': [],
+                'cluster_counts': [],
+                'snapshots': [],
+                'status_data': []
+            }
+        
+        cam_data['current_frame_data'] = {
+            'frame': cam_data['frame_count'],
+            'timestamp': current_time,
+            'detections': len(snapshots),
+            'clusters': cluster_count,
+            'status': status,
+            'next_update_in': max(0, cam_data['stable_values']['next_update'] - current_time)
+        }
+        return cam_data['current_frame_data']
+    
+    def update_stable_values(self, camera_type: str = 'side'):
+        """Update stable values using last 30 seconds of data"""
+        current_time = time.time()
+        cam_data = self.camera_data[camera_type]
+        window_start = current_time - self.ANALYSIS_WINDOW
+        recent_frames = [f for f in cam_data['frame_buffer'] if f['timestamp'] >= window_start]
+        if not recent_frames:
+            return
+        recent_cluster_counts = [f['clusters'] for f in recent_frames]
+        recent_status_data = [f['status'] for f in recent_frames]
+        stable_total = self.calculate_stable_total(recent_cluster_counts, cam_data['stable_values'])
+        stable_status = self.calculate_stable_status(recent_status_data, stable_total, cam_data['stable_values'])
+        self.update_window_statistics(recent_cluster_counts, cam_data['window_statistics'])
+        cam_data['stable_values']['total'] = stable_total
+        cam_data['stable_values']['active'] = stable_status['active']
+        cam_data['stable_values']['sick'] = stable_status['sick']
+        cam_data['stable_values']['dead'] = stable_status['dead']
+        cam_data['stable_values']['last_update'] = current_time
+        cam_data['stable_values']['next_update'] = current_time + self.UPDATE_INTERVAL
+        print(f"[{camera_type}][{time.strftime('%H:%M:%S')}] Stable values updated:")
+        print(f"  Total: {stable_total}, Active: {stable_status['active']}, "
+              f"Sick: {stable_status['sick']}, Dead: {stable_status['dead']}")
+    
+    def calculate_stable_total(self, recent_counts: List[int], stable_values: Dict) -> int:
+        """Calculate stable total from recent counts"""
+        if not recent_counts:
+            return stable_values.get('total', 0)
+        count_freq = {}
+        for count in recent_counts:
+            count_freq[count] = count_freq.get(count, 0) + 1
+        mode_count = max(count_freq, key=count_freq.get) if count_freq else 0
+        median_count = int(np.median(recent_counts)) if recent_counts else 0
+        weights = np.linspace(0.1, 1.0, len(recent_counts))
+        weights = weights / weights.sum()
+        weighted_avg = np.average(recent_counts, weights=weights)
+        if mode_count == median_count:
+            stable_total = mode_count
+        elif abs(mode_count - weighted_avg) <= 2:
+            stable_total = mode_count
+        else:
+            stable_total = int(median_count)
+        if stable_values['total'] > 0:
+            smoothing = 0.6
+            stable_total = int(stable_values['total'] * smoothing + stable_total * (1 - smoothing))
+        return max(0, stable_total)
+    
+    def calculate_stable_status(self, recent_status_data: List[Dict], total_count: int, stable_values: Dict) -> Dict:
+        """Calculate stable status counts from recent data"""
+        if not recent_status_data or total_count == 0:
+            return {'active': 0, 'sick': 0, 'dead': 0}
+        avg_active = np.mean([s['active'] for s in recent_status_data])
+        avg_sick = np.mean([s['sick'] for s in recent_status_data])
+        avg_dead = np.mean([s['dead'] for s in recent_status_data])
+        avg_total = avg_active + avg_sick + avg_dead
+        if avg_total > 0:
+            active_ratio = avg_active / avg_total
+            sick_ratio = avg_sick / avg_total
+            dead_ratio = avg_dead / avg_total
+            active_count = int(total_count * active_ratio)
+            sick_count = int(total_count * sick_ratio)
+            dead_count = total_count - active_count - sick_count
+        else:
+            active_count = total_count
+            sick_count = 0
+            dead_count = 0
+        smoothing = 0.6
+        active_count = int(stable_values['active'] * smoothing + active_count * (1 - smoothing))
+        sick_count = int(stable_values['sick'] * smoothing + sick_count * (1 - smoothing))
+        dead_count = int(stable_values['dead'] * smoothing + dead_count * (1 - smoothing))
+        total_check = active_count + sick_count + dead_count
+        if total_check != total_count:
+            diff = total_count - total_check
+            active_count += diff
+        return {
+            'active': max(0, active_count),
+            'sick': max(0, sick_count),
+            'dead': max(0, dead_count)
+        }
+    
+    def update_window_statistics(self, recent_counts: List[int], window_statistics: Dict):
+        """Update window statistics"""
+        if not recent_counts:
+            return
+        window_statistics['min_count'] = min(recent_counts)
+        window_statistics['max_count'] = max(recent_counts)
+        window_statistics['mean_count'] = np.mean(recent_counts)
+        window_statistics['median_count'] = np.median(recent_counts)
+        window_statistics['count_std'] = np.std(recent_counts) if len(recent_counts) > 1 else 0
+        count_freq = {}
+        for count in recent_counts:
+            count_freq[count] = count_freq.get(count, 0) + 1
+        if count_freq:
+            window_statistics['mode_count'] = max(count_freq, key=count_freq.get)
+    
+    def get_stable_counts(self, camera_type: str = None) -> Dict:
+        """Get stable counts for specified camera"""
+        if camera_type is None:
+            camera_type = self.current_camera_type
+        return {
+            'total': self.camera_data[camera_type]['stable_values']['total'],
+            'active': self.camera_data[camera_type]['stable_values']['active'],
+            'sick': self.camera_data[camera_type]['stable_values']['sick'],
+            'dead': self.camera_data[camera_type]['stable_values']['dead']
+        }
 
 # --- 1. USER CONFIGURATION ---
 MAX_ALLOWED_TILT = 60.0#50.0
@@ -203,6 +510,9 @@ if __name__ == "__main__":
     inference_count = 0
     inference_start_time = time.time()
 
+    # Initialize ObjectStatusAnalyzer
+    analyzer = ObjectStatusAnalyzer(min_confidence=CONFIDENCE_THRESHOLD)
+
     # ID Management: Map tracker IDs to fixed fish IDs (1-20)
     tracker_to_fish_id = {}  # Maps tracker_id -> fish_id (1-20)
     fish_id_pool = set(range(1, MAX_FISH_COUNT + 1))  # Available IDs
@@ -266,6 +576,9 @@ if __name__ == "__main__":
             sick_labels = []
             unknown_indices = []
             unknown_labels = []
+            
+            # Prepare detections for analyzer
+            detections_for_analyzer = []
 
             image = edge_annotator.annotate(scene=image, key_points=key_points)
             image = vertex_annotator.annotate(scene=image, key_points=key_points)
@@ -309,6 +622,15 @@ if __name__ == "__main__":
                     if fish_id is not None:
                         status_text = f"ID{fish_id} {status_text}"
                     
+                    # Prepare detection data for analyzer
+                    bbox = detections.xyxy[i]  # [x1, y1, x2, y2]
+                    det_dict = {
+                        'bbox': bbox.tolist(),
+                        'confidence': float(detections.confidence[i]) if detections.confidence is not None else 0.5,
+                        'health_status': 'HEALTHY' if 'HEALTHY' in status_text else 'SICK'
+                    }
+                    detections_for_analyzer.append(det_dict)
+                    
                     if "HEALTHY" in status_text:
                         healthy_count += 1
                         healthy_indices.append(i)
@@ -320,6 +642,12 @@ if __name__ == "__main__":
                     else:
                         unknown_indices.append(i)
                         unknown_labels.append(status_text)
+            
+            # Process frame with analyzer
+            analyzer.process_frame(detections_for_analyzer, camera_type='side')
+            
+            # Get stable counts
+            stable_counts = analyzer.get_stable_counts('side')
             
             if healthy_indices:
                 det_h = detections[healthy_indices]
@@ -349,8 +677,24 @@ if __name__ == "__main__":
                 cv2.putText(image, "BOTTOM ZONE", (10, line_y - 10), 
                             cv2.FONT_HERSHEY_SIMPLEX, 0.5, (211, 211, 211), 1)
 
+            # --- DISPLAY CURRENT FRAME COUNTS (LEFT SIDE) ---
             cv2.putText(image, f"Healthy: {healthy_count} | Sick: {sick_count}", (20, 40), 
                         cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+            
+            # --- DISPLAY STABLE COUNTS (RIGHT SIDE) ---
+            # Position on right side of screen
+            right_x = cam.width - 350 if cam.width else 950
+            
+            cv2.putText(image, f"Stable Counts (15s):", (right_x, 30), 
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
+            cv2.putText(image, f"Total: {stable_counts['total']}", (right_x, 60), 
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
+            cv2.putText(image, f"Active: {stable_counts['active']}", (right_x, 90), 
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
+            cv2.putText(image, f"Sick: {stable_counts['sick']}", (right_x, 120), 
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 165, 255), 2)
+            cv2.putText(image, f"Dead: {stable_counts['dead']}", (right_x, 150), 
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
             
             cv2.imshow("Fish Monitor (Native)", image)
 
