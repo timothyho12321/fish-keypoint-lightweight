@@ -235,7 +235,7 @@ if __name__ == "__main__":
                 iou=IOU_THRESHOLD,
                 imgsz=640,
                 verbose=False,
-                max_det=20,
+                # max_det=20,
                 # tracker="botsort.yaml",
                 tracker="bytetrack.yaml",
                 persist=True
