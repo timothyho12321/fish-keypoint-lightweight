@@ -6,9 +6,14 @@ ENV PYTHONUNBUFFERED=1
 WORKDIR /app
 
 # ---------------------------------------------------------------------------
-# 1. Install System Dependencies (Added Qt/XCB libs for GUI support)
+# 1. Install System Dependencies
+#    CRITICAL CHANGE: Added 'build-essential' and 'python3-dev'.
+#    These are REQUIRED to compile 'lapx' (BoxMOT dependency) on Jetson ARM64.
 # ---------------------------------------------------------------------------
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    python3-dev \
+    git \
     gir1.2-aravis-0.8 \
     libaravis-dev \
     aravis-tools \
@@ -32,14 +37,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # ---------------------------------------------------------------------------
-# 2 & 3. Python Dependencies (Merged)
+# 2. Python Dependencies
 #    - Uninstall numpy first to clear artifacts
-#    - Install pinned numpy AND all other packages in one go
-#    - CHANGED: "opencv-python-headless" -> "opencv-python" for imshow support
-#    - Added boxmot for advanced tracking with ReID
+#    - Install lapx explicitly first (to ensure compilation succeeds)
+#    - Install boxmot and others
 # ---------------------------------------------------------------------------
 RUN pip3 install --upgrade pip && \
     pip3 uninstall -y numpy || true && \
+    # Install lapx first to ensure the tracking solver compiles correctly
+    pip3 install --no-cache-dir "lapx>=0.5.5" && \
     pip3 install --no-cache-dir \
     "numpy==1.26.4" \
     "opencv-python" \
@@ -51,10 +57,16 @@ RUN pip3 install --upgrade pip && \
     --extra-index-url https://pypi.nvidia.com
 
 # ---------------------------------------------------------------------------
-# 4. Sanity checks
+# 3. Sanity checks
 # ---------------------------------------------------------------------------
 RUN python3 - <<'PY'
 import numpy, torch
+try:
+    import lap
+    print("Lapx check: OK")
+except ImportError:
+    print("WARNING: 'lap' module not found. BoxMOT tracking might fail.")
+
 print(f"NumPy Version: {numpy.__version__}")
 print(f"Torch Version: {torch.__version__}")
 if not numpy.__version__.startswith("1."):
@@ -62,11 +74,11 @@ if not numpy.__version__.startswith("1."):
 PY
 
 # ---------------------------------------------------------------------------
-# 5. Copy Project Files
+# 4. Copy Project Files
 # ---------------------------------------------------------------------------
 COPY . /app
 
 # ---------------------------------------------------------------------------
-# 6. Run Inference
+# 5. Run Inference
 # ---------------------------------------------------------------------------
 CMD ["python3", "main_inference.py"]
