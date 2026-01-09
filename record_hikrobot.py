@@ -21,7 +21,7 @@ except ValueError:
 CONFIG_PATH = 'config.yaml'
 SAVE_FOLDER = "." 
 
-RECORD_TIME_DEFAULT = 10  # in minutes
+RECORD_TIME_DEFAULT = 1  # in minutes
 # ==========================================
 #  HELPER FUNCTIONS
 # ==========================================
