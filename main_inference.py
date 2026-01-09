@@ -236,7 +236,8 @@ if __name__ == "__main__":
                 imgsz=640,
                 verbose=False,
                 max_det=20,
-                tracker="botsort.yaml",
+                # tracker="botsort.yaml",
+                tracker="bytetrack.yaml",
                 persist=True
             )
             
