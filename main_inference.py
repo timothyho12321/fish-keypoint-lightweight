@@ -12,14 +12,14 @@ gi.require_version('Aravis', '0.8')
 from gi.repository import Aravis
 
 # --- 1. USER CONFIGURATION ---
-MAX_ALLOWED_TILT = 60.0 #50.0
+MAX_ALLOWED_TILT = 60.0#50.0
 CONFIDENCE_THRESHOLD = 0.45 
 IOU_THRESHOLD = 0.7
 
 # RATIO THRESHOLDS
-RATIO_OPEN_WATER = 0.51#0.35  # Lenient for swimming fish
-RATIO_BOTTOM_ZONE = 0.56#0.4 # Strict for fish on floor
-BOTTOM_ZONE_LIMIT = 0.55 # Bottom 15% of screen is "Danger Zone"
+RATIO_OPEN_WATER = 0.35  # Lenient for swimming fish
+RATIO_BOTTOM_ZONE = 0.4 # Strict for fish on floor
+BOTTOM_ZONE_LIMIT = 0.45 # Bottom 15% of screen is "Danger Zone"
 
 # VISUAL DEBUGGING
 SHOW_BOTTOM_ZONE_LINE = True  # Set to False to hide the line
