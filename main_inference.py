@@ -13,14 +13,19 @@ from gi.repository import Aravis
 
 # --- 1. USER CONFIGURATION ---
 MAX_ALLOWED_TILT = 50.0 
-MIN_BODY_RATIO = 0.35   # <--- NEW: Threshold for "Flatness" (Height/Length)
 CONFIDENCE_THRESHOLD = 0.45 
 IOU_THRESHOLD = 0.7
 
+# RATIO THRESHOLDS
+RATIO_OPEN_WATER = 0.35  # Lenient for swimming fish
+RATIO_BOTTOM_ZONE = 0.50 # Strict for fish on floor (Catches the 0.34 oscillation)
+BOTTOM_ZONE_LIMIT = 0.85 # Bottom 15% of screen is "Danger Zone"
+
 # Keypoint Definitions (Tiger Barbs)
-KEYPOINT_NAMES = ["S", "D", "T", "C", "B"]  # centre, bottom, top-dorsal, snout and tail
+KEYPOINT_NAMES = ["S", "D", "T", "C", "B"] 
 IDX_DORSAL = 1  
-IDX_BOTTOM = 4   # <--- RENAMED from IDX_BELLY
+IDX_CENTER = 3   # <--- NEW: Used to check depth/position
+IDX_BOTTOM = 4   
 
 # --- 2. CAMERA CLASS ---
 class AravisCaptureThread:
@@ -99,42 +104,50 @@ class AravisCaptureThread:
 
         self.cam.stop_acquisition()
 
-# --- 3. HELPER FUNCTION: GET STATUS (UPDATED) ---
-def get_fish_status(kpts_xy):
+# --- 3. HELPER FUNCTION: GET STATUS (ZONE AWARE) ---
+def get_fish_status(kpts_xy, frame_height):
     """
     Returns tuple: (Status_String, Color_Object)
     """
-    # kpts_xy shape: (5, 2) -> [S, D, T, C, B]
     snout  = kpts_xy[0]
     dorsal = kpts_xy[IDX_DORSAL]
     tail   = kpts_xy[2]
+    center = kpts_xy[IDX_CENTER]
     bottom = kpts_xy[IDX_BOTTOM]
 
     # 1. MISSING POINT CHECK
-    # If we miss fins, it is likely flat/dead/occluded.
     if dorsal[0] == 0 or bottom[0] == 0:
-        # Fallback: If we see Snout & Tail but miss fins, treat as SICK (Occluded)
         if snout[0] != 0 and tail[0] != 0:
-            return "SICK (Occluded)", sv.Color(255, 165, 0) # Orange
-        return "Unknown", sv.Color(128, 128, 128) # Gray
+            return "SICK (Occluded)", sv.Color(255, 165, 0)
+        return "Unknown", sv.Color(128, 128, 128)
 
     # 2. CALCULATE DIMENSIONS
-    # Height: Distance between Dorsal and Bottom
     height = math.hypot(dorsal[0] - bottom[0], dorsal[1] - bottom[1])
-    
-    # Length: Distance between Snout and Tail
     length = math.hypot(snout[0] - tail[0], snout[1] - tail[1])
 
     if length == 0: return "Unknown", sv.Color(128, 128, 128)
 
-    # 3. RATIO CHECK (The Fix for "Lying Flat")
+    # 3. RATIO CHECK (ZONE BASED)
     ratio = height / length
     
-    # Healthy Tiger Barbs are tall. Dead ones look flat/thin.
-    if ratio < MIN_BODY_RATIO:
-        return f"SICK (Flat {ratio:.2f})", sv.Color(255, 165, 0)
+    # Determine Y-position (Use Center Keypoint if available, else average dorsal/bottom)
+    y_pos = center[1] if center[0] != 0 else (dorsal[1] + bottom[1]) / 2
+    
+    # Check if fish is in the "Bottom Zone" (last 15% of screen)
+    if y_pos > (frame_height * BOTTOM_ZONE_LIMIT):
+        # STRICT MODE: Fish on bottom must be very upright
+        limit = RATIO_BOTTOM_ZONE # 0.50
+        zone_label = "BTM"
+    else:
+        # LENIENT MODE: Fish swimming freely
+        limit = RATIO_OPEN_WATER # 0.35
+        zone_label = "OPEN"
 
-    # 4. TILT CHECK (Standard Logic)
+    if ratio < limit:
+        # Returns SICK with Ratio and Zone info
+        return f"SICK ({zone_label} {ratio:.2f})", sv.Color(255, 165, 0)
+
+    # 4. TILT CHECK
     dx = dorsal[0] - bottom[0]
     dy = dorsal[1] - bottom[1] 
     angle_deg = math.degrees(math.atan2(dy, dx))
@@ -192,7 +205,6 @@ if __name__ == "__main__":
                 
             image = cam.image_queue.get()
 
-            # Using imgsz=640 and conf/iou thresholds
             results = model.predict(
                 source=image,
                 conf=CONFIDENCE_THRESHOLD,
@@ -210,29 +222,23 @@ if __name__ == "__main__":
             healthy_count = 0
             sick_count = 0
             
-            # Reset lists for this frame
             healthy_indices = []
             healthy_labels = []
-            
             sick_indices = []
             sick_labels = []
-
             unknown_indices = []
             unknown_labels = []
 
-            # 1. Annotate Keypoints on Raw Image
             image = edge_annotator.annotate(scene=image, key_points=key_points)
             image = vertex_annotator.annotate(scene=image, key_points=key_points)
 
-            # 2. Logic Loop
             if len(key_points.xy) > 0:
                 for i in range(len(detections)):
                     kpts = key_points.xy[i] 
                     
-                    # --- NEW LOGIC CALL ---
-                    status_text, _ = get_fish_status(kpts)
+                    # --- PASS FRAME HEIGHT TO FUNCTION ---
+                    status_text, _ = get_fish_status(kpts, cam.height)
                     
-                    # Categorize based on string content
                     if "HEALTHY" in status_text:
                         healthy_count += 1
                         healthy_indices.append(i)
@@ -245,7 +251,6 @@ if __name__ == "__main__":
                         unknown_indices.append(i)
                         unknown_labels.append(status_text)
             
-            # 3. Draw Boxes & Labels (Batch processing for speed)
             if healthy_indices:
                 det_h = detections[healthy_indices]
                 image = box_annotator_healthy.annotate(scene=image, detections=det_h)
@@ -261,13 +266,11 @@ if __name__ == "__main__":
                 image = box_annotator_unknown.annotate(scene=image, detections=det_u)
                 image = label_annotator_unknown.annotate(scene=image, detections=det_u, labels=unknown_labels)
 
-            # 4. Stats
             cv2.putText(image, f"Healthy: {healthy_count} | Sick: {sick_count}", (20, 40), 
                         cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
             
             cv2.imshow("Fish Monitor (Native)", image)
 
-            # 5. FPS Logic
             inference_count += 1
             elapsed = time.time() - inference_start_time
             if elapsed >= 30.0:
