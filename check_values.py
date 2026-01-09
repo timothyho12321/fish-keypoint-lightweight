@@ -150,7 +150,7 @@ if __name__ == "__main__":
     cam.start()
 
     # 3. Visualization Setup
-    box_annotator = sv.BoxAnnotator(thickness=1, color=sv.Color.white())
+    box_annotator = sv.BoxAnnotator(thickness=1, color=sv.Color.WHITE)
     label_annotator = sv.LabelAnnotator(text_scale=0.5, text_thickness=1, text_padding=2)
 
     # 4. Data Storage
