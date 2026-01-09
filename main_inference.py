@@ -18,13 +18,16 @@ IOU_THRESHOLD = 0.7
 
 # RATIO THRESHOLDS
 RATIO_OPEN_WATER = 0.35  # Lenient for swimming fish
-RATIO_BOTTOM_ZONE = 0.50 # Strict for fish on floor (Catches the 0.34 oscillation)
+RATIO_BOTTOM_ZONE = 0.50 # Strict for fish on floor
 BOTTOM_ZONE_LIMIT = 0.85 # Bottom 15% of screen is "Danger Zone"
+
+# VISUAL DEBUGGING
+SHOW_BOTTOM_ZONE_LINE = True  # Set to False to hide the line
 
 # Keypoint Definitions (Tiger Barbs)
 KEYPOINT_NAMES = ["S", "D", "T", "C", "B"] 
 IDX_DORSAL = 1  
-IDX_CENTER = 3   # <--- NEW: Used to check depth/position
+IDX_CENTER = 3   
 IDX_BOTTOM = 4   
 
 # --- 2. CAMERA CLASS ---
@@ -265,6 +268,19 @@ if __name__ == "__main__":
                 det_u = detections[unknown_indices]
                 image = box_annotator_unknown.annotate(scene=image, detections=det_u)
                 image = label_annotator_unknown.annotate(scene=image, detections=det_u, labels=unknown_labels)
+
+            # --- DRAW ZONE LINE ---
+            if SHOW_BOTTOM_ZONE_LINE and cam.height is not None:
+                # Calculate Y-coordinate for the line
+                line_y = int(cam.height * BOTTOM_ZONE_LIMIT)
+                
+                # Draw Line (Light Grey)
+                # BGR Color: (211, 211, 211)
+                cv2.line(image, (0, line_y), (cam.width, line_y), (211, 211, 211), 2)
+                
+                # Optional: Add small text label for the line
+                cv2.putText(image, "BOTTOM ZONE", (10, line_y - 10), 
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (211, 211, 211), 1)
 
             cv2.putText(image, f"Healthy: {healthy_count} | Sick: {sick_count}", (20, 40), 
                         cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
