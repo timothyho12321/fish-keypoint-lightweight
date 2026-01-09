@@ -24,6 +24,9 @@ BOTTOM_ZONE_LIMIT = 0.45 # Bottom 15% of screen is "Danger Zone"
 # VISUAL DEBUGGING
 SHOW_BOTTOM_ZONE_LINE = True  # Set to False to hide the line
 
+# TRACKING CONFIGURATION
+MAX_FISH_COUNT = 20  # Maximum number of fish to track
+
 # Keypoint Definitions (Tiger Barbs)
 KEYPOINT_NAMES = ["S", "D", "T", "C", "B"] 
 IDX_DORSAL = 1  
@@ -200,6 +203,13 @@ if __name__ == "__main__":
     inference_count = 0
     inference_start_time = time.time()
 
+    # ID Management: Map tracker IDs to fixed fish IDs (1-20)
+    tracker_to_fish_id = {}  # Maps tracker_id -> fish_id (1-20)
+    fish_id_pool = set(range(1, MAX_FISH_COUNT + 1))  # Available IDs
+    active_fish_ids = {}  # fish_id -> last_seen_frame
+    frame_counter = 0
+    ID_TIMEOUT = 90  # Frames before ID is released back to pool
+
     try:
         while True:
             if cam.image_queue.empty():
@@ -235,6 +245,17 @@ if __name__ == "__main__":
             detections = sv.Detections.from_ultralytics(result)
             key_points = sv.KeyPoints.from_ultralytics(result)
             
+            frame_counter += 1
+            
+            # Release IDs that haven't been seen for ID_TIMEOUT frames
+            ids_to_release = [fish_id for fish_id, last_frame in active_fish_ids.items() 
+                            if frame_counter - last_frame > ID_TIMEOUT]
+            for fish_id in ids_to_release:
+                fish_id_pool.add(fish_id)
+                del active_fish_ids[fish_id]
+                # Remove from tracker mapping
+                tracker_to_fish_id = {k: v for k, v in tracker_to_fish_id.items() if v != fish_id}
+            
             healthy_count = 0
             sick_count = 0
             
@@ -252,8 +273,40 @@ if __name__ == "__main__":
                 for i in range(len(detections)):
                     kpts = key_points.xy[i] 
                     
+                    # Get tracker ID from detections
+                    tracker_id = None
+                    if hasattr(detections, 'tracker_id') and detections.tracker_id is not None:
+                        if i < len(detections.tracker_id):
+                            tracker_id = int(detections.tracker_id[i])
+                    
+                    # Assign fish ID (1-20)
+                    fish_id = None
+                    if tracker_id is not None:
+                        if tracker_id in tracker_to_fish_id:
+                            # Existing mapping
+                            fish_id = tracker_to_fish_id[tracker_id]
+                        elif fish_id_pool:
+                            # Assign new ID from pool
+                            fish_id = min(fish_id_pool)
+                            fish_id_pool.remove(fish_id)
+                            tracker_to_fish_id[tracker_id] = fish_id
+                    elif fish_id_pool:
+                        # No tracker ID, assign from pool
+                        fish_id = min(fish_id_pool)
+                        fish_id_pool.remove(fish_id)
+                        if tracker_id is not None:
+                            tracker_to_fish_id[tracker_id] = fish_id
+                    
+                    # Update last seen
+                    if fish_id is not None:
+                        active_fish_ids[fish_id] = frame_counter
+                    
                     # --- PASS FRAME HEIGHT TO FUNCTION ---
                     status_text, _ = get_fish_status(kpts, cam.height)
+                    
+                    # Add ID to status text
+                    if fish_id is not None:
+                        status_text = f"ID{fish_id} {status_text}"
                     
                     if "HEALTHY" in status_text:
                         healthy_count += 1
