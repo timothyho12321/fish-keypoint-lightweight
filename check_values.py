@@ -35,6 +35,12 @@ IDX_CENTER = 3
 IDX_BOTTOM = 4
 IDX_SNOUT  = 0
 IDX_TAIL   = 2
+
+# Detection Thresholds (from main_inference.py)
+MAX_ALLOWED_TILT = 60.0
+RATIO_OPEN_WATER = 0.51
+RATIO_BOTTOM_ZONE = 0.56
+BOTTOM_ZONE_LIMIT = 0.55
 # ==========================================
 
 class AravisCaptureThread:
@@ -99,6 +105,61 @@ class AravisCaptureThread:
                 self.stream.push_buffer(buffer)
         self.cam.stop_acquisition()
 
+def get_fish_status(kpts_xy, frame_height):
+    """
+    Returns tuple: (Status_String, Color_Object)
+    """
+    snout  = kpts_xy[0]
+    dorsal = kpts_xy[IDX_DORSAL]
+    tail   = kpts_xy[2]
+    center = kpts_xy[IDX_CENTER]
+    bottom = kpts_xy[IDX_BOTTOM]
+
+    # 1. MISSING POINT CHECK
+    if dorsal[0] == 0 or bottom[0] == 0:
+        if snout[0] != 0 and tail[0] != 0:
+            return "SICK (Occluded)", sv.Color(255, 165, 0)
+        return "Unknown", sv.Color(128, 128, 128)
+
+    # 2. CALCULATE DIMENSIONS
+    height = math.hypot(dorsal[0] - bottom[0], dorsal[1] - bottom[1])
+    length = math.hypot(snout[0] - tail[0], snout[1] - tail[1])
+
+    if length == 0: return "Unknown", sv.Color(128, 128, 128)
+
+    # 3. RATIO CHECK (ZONE BASED)
+    ratio = height / length
+    
+    # Determine Y-position (Use Center Keypoint if available, else average dorsal/bottom)
+    y_pos = center[1] if center[0] != 0 else (dorsal[1] + bottom[1]) / 2
+    
+    # Check if fish is in the "Bottom Zone" (last 15% of screen)
+    if y_pos > (frame_height * BOTTOM_ZONE_LIMIT):
+        # STRICT MODE: Fish on bottom must be very upright
+        limit = RATIO_BOTTOM_ZONE
+        zone_label = "BTM FLAT"
+    else:
+        # LENIENT MODE: Fish swimming freely
+        limit = RATIO_OPEN_WATER
+        zone_label = "OPEN FLAT"
+
+    if ratio < limit:
+        # Returns SICK with Ratio and Zone info
+        return f"SICK ({zone_label} {ratio:.2f})", sv.Color(255, 165, 0)
+
+    # 4. TILT CHECK
+    dx = dorsal[0] - bottom[0]
+    dy = dorsal[1] - bottom[1] 
+    angle_deg = math.degrees(math.atan2(dy, dx))
+    
+    deviation = abs(angle_deg - (-90))
+    if deviation > 180: deviation = 360 - deviation
+
+    if deviation > MAX_ALLOWED_TILT:
+        return f"SICK (Tilt {int(deviation)})", sv.Color(255, 165, 0)
+    
+    return f"HEALTHY", sv.Color.GREEN
+
 def calculate_metrics(kpts_xy):
     """
     Returns (tilt_degrees, body_ratio, y_center)
@@ -149,10 +210,19 @@ if __name__ == "__main__":
     cam = AravisCaptureThread(side_camera_id)
     cam.start()
 
-    # 3. Visualization Setup
-    # Using Green for valid calibration data to distinguish from background
-    box_annotator = sv.BoxAnnotator(thickness=2, color=sv.Color.GREEN)
-    label_annotator = sv.LabelAnnotator(text_scale=0.5, text_thickness=1, text_padding=2, color=sv.Color.GREEN)
+    # 3. Visualization Setup (same as main_inference.py)
+    fish_edges = [(0, 1), (1, 2), (2, 4), (4, 0)] 
+    edge_annotator = sv.EdgeAnnotator(color=sv.Color.YELLOW, thickness=1, edges=fish_edges)
+    vertex_annotator = sv.VertexAnnotator(color=sv.Color.GREEN, radius=4)
+
+    box_annotator_healthy = sv.BoxAnnotator(color=sv.Color.GREEN, thickness=2)
+    label_annotator_healthy = sv.LabelAnnotator(color=sv.Color.GREEN, text_scale=0.5, text_thickness=1)
+
+    box_annotator_sick = sv.BoxAnnotator(color=sv.Color(255, 165, 0), thickness=2)
+    label_annotator_sick = sv.LabelAnnotator(color=sv.Color(255, 165, 0), text_scale=0.5, text_thickness=1)
+
+    box_annotator_unknown = sv.BoxAnnotator(color=sv.Color(128, 128, 128), thickness=2)
+    label_annotator_unknown = sv.LabelAnnotator(color=sv.Color(128, 128, 128), text_scale=0.5, text_thickness=1)
 
     # 4. Data Storage
     collected_data = [] 
@@ -174,44 +244,84 @@ if __name__ == "__main__":
                 
             image = cam.image_queue.get()
             
-            # Draw Timer
+            # Draw Timer and Counts
             remaining = int(end_time - time.time())
-            cv2.putText(image, f"Collecting Data... {remaining}s", (20, 40), 
-                        cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
+            cv2.putText(image, f"Calibration: {remaining}s | Healthy: {healthy_count} | Sick: {sick_count}", (20, 40), 
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
 
-            # Inference (ADDED half=True to match main_inference)
-            results = model.predict(source=image, conf=0.45, iou=0.7, imgsz=640, half=True, verbose=False, max_det=30)
+            # Inference
+            results = model.predict(source=image, conf=0.45, iou=0.7, imgsz=640, verbose=False, max_det=30)
             result = results[0]
 
             detections = sv.Detections.from_ultralytics(result)
             key_points = sv.KeyPoints.from_ultralytics(result)
             
-            # Lists for filtering ONLY valid fish
-            valid_indices = []
-            labels = []
+            healthy_count = 0
+            sick_count = 0
+            
+            healthy_indices = []
+            healthy_labels = []
+            sick_indices = []
+            sick_labels = []
+            unknown_indices = []
+            unknown_labels = []
+
+            # Draw keypoints first
+            image = edge_annotator.annotate(scene=image, key_points=key_points)
+            image = vertex_annotator.annotate(scene=image, key_points=key_points)
 
             if len(key_points.xy) > 0:
                 for i in range(len(detections)):
                     kpts = key_points.xy[i]
-                    tilt, ratio, y_pos = calculate_metrics(kpts)
                     
-                    if tilt is not None:
-                        # 1. Store Data
-                        collected_data.append({
-                            'tilt': tilt,
-                            'ratio': ratio,
-                            'y_pos': y_pos
-                        })
+                    # Get fish status using main_inference.py logic
+                    status_text, _ = get_fish_status(kpts, cam.height)
+                    
+                    if "HEALTHY" in status_text:
+                        healthy_count += 1
+                        healthy_indices.append(i)
+                        healthy_labels.append(status_text)
                         
-                        # 2. Mark as Valid for Drawing
-                        valid_indices.append(i)
-                        labels.append(f"T:{int(tilt)}° R:{ratio:.2f}")
+                        # Also collect data for calibration
+                        tilt, ratio, y_pos = calculate_metrics(kpts)
+                        if tilt is not None:
+                            collected_data.append({
+                                'tilt': tilt,
+                                'ratio': ratio,
+                                'y_pos': y_pos
+                            })
+                    elif "SICK" in status_text:
+                        sick_count += 1
+                        sick_indices.append(i)
+                        sick_labels.append(status_text)
+                        
+                        # Also collect data for calibration
+                        tilt, ratio, y_pos = calculate_metrics(kpts)
+                        if tilt is not None:
+                            collected_data.append({
+                                'tilt': tilt,
+                                'ratio': ratio,
+                                'y_pos': y_pos
+                            })
+                    else:
+                        unknown_indices.append(i)
+                        unknown_labels.append(status_text)
+            
+            # Annotate each category separately
+            if healthy_indices:
+                det_h = detections[healthy_indices]
+                image = box_annotator_healthy.annotate(scene=image, detections=det_h)
+                image = label_annotator_healthy.annotate(scene=image, detections=det_h, labels=healthy_labels)
 
-            # Annotate ONLY valid fish (Hides background false detections)
-            if valid_indices:
-                det_valid = detections[valid_indices]
-                image = box_annotator.annotate(scene=image, detections=det_valid)
-                image = label_annotator.annotate(scene=image, detections=det_valid, labels=labels)
+            if sick_indices:
+                det_s = detections[sick_indices]
+                image = box_annotator_sick.annotate(scene=image, detections=det_s)
+                image = label_annotator_sick.annotate(scene=image, detections=det_s, labels=sick_labels)
+
+            if unknown_indices:
+                det_u = detections[unknown_indices]
+                image = box_annotator_unknown.annotate(scene=image, detections=det_u)
+                image = label_annotator_unknown.annotate(scene=image, detections=det_u, labels=unknown_labels)
 
             cv2.imshow("Calibration Mode", image)
             if cv2.waitKey(1) & 0xFF == ord('q'):
