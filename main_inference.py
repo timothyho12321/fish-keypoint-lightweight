@@ -228,7 +228,7 @@ if __name__ == "__main__":
             #     max_det=30 
             # )
             
-            # Using tracking with BoTSORT
+            # Using tracking with BoTSORT + ReID to handle occlusions
             results = model.track(
                 source=image,
                 conf=CONFIDENCE_THRESHOLD,
@@ -236,8 +236,7 @@ if __name__ == "__main__":
                 imgsz=640,
                 verbose=False,
                 max_det=20,
-                # tracker="botsort.yaml",
-                tracker="bytetrack.yaml",
+                tracker="botsort.yaml",  # BoTSORT with ReID for robust tracking through occlusions
                 persist=True
             )
             
