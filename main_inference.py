@@ -18,8 +18,8 @@ IOU_THRESHOLD = 0.7
 
 # RATIO THRESHOLDS
 RATIO_OPEN_WATER = 0.35  # Lenient for swimming fish
-RATIO_BOTTOM_ZONE = 0.50 # Strict for fish on floor
-BOTTOM_ZONE_LIMIT = 0.85 # Bottom 15% of screen is "Danger Zone"
+RATIO_BOTTOM_ZONE = 0.4 # Strict for fish on floor
+BOTTOM_ZONE_LIMIT = 0.6 # Bottom 15% of screen is "Danger Zone"
 
 # VISUAL DEBUGGING
 SHOW_BOTTOM_ZONE_LINE = True  # Set to False to hide the line
