@@ -37,9 +37,9 @@ IDX_SNOUT  = 0
 IDX_TAIL   = 2
 
 # Detection Thresholds (from main_inference.py)
-MAX_ALLOWED_TILT = 60.0
-RATIO_OPEN_WATER = 0.51
-RATIO_BOTTOM_ZONE = 0.56
+MAX_ALLOWED_TILT = 50.0
+RATIO_OPEN_WATER = 0.35
+RATIO_BOTTOM_ZONE = 0.4
 BOTTOM_ZONE_LIMIT = 0.55
 # ==========================================
 
@@ -243,11 +243,6 @@ if __name__ == "__main__":
                 continue
                 
             image = cam.image_queue.get()
-            
-            # Draw Timer and Counts
-            remaining = int(end_time - time.time())
-            cv2.putText(image, f"Calibration: {remaining}s | Healthy: {healthy_count} | Sick: {sick_count}", (20, 40), 
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
 
             # Inference
             results = model.predict(source=image, conf=0.45, iou=0.7, imgsz=640, verbose=False, max_det=30)
@@ -322,6 +317,11 @@ if __name__ == "__main__":
                 det_u = detections[unknown_indices]
                 image = box_annotator_unknown.annotate(scene=image, detections=det_u)
                 image = label_annotator_unknown.annotate(scene=image, detections=det_u, labels=unknown_labels)
+
+            # Draw Timer and Counts (after classification)
+            remaining = int(end_time - time.time())
+            cv2.putText(image, f"Calibration: {remaining}s | Healthy: {healthy_count} | Sick: {sick_count}", (20, 40), 
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
 
             cv2.imshow("Calibration Mode", image)
             if cv2.waitKey(1) & 0xFF == ord('q'):
