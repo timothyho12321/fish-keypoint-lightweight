@@ -12,6 +12,3 @@ track_buffer: 300        # Keep lost tracks for 300 frames (10 seconds at 30fps)
 
 # Matching threshold - Lowered to improve re-ID after brief overlaps
 match_thresh: 0.65       # IoU threshold for matching (lower = more flexible re-ID)
-
-# Additional parameters
-frame_rate: 30           # Expected frame rate for proper temporal matching
