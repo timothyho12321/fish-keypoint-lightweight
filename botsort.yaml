@@ -16,9 +16,3 @@ with_reid: true          # Enable ReID model for appearance matching
 proximity_thresh: 0.5    # Spatial proximity threshold for matching
 appearance_thresh: 0.25  # Appearance similarity threshold for ReID
 
-# Camera motion compensation
-cmc_method: sparseOptFlow  # Options: sparseOptFlow, orb, ecc
-
-# Fuse scores
-fuse_score: true        # Use fused detection and ReID scores
-
